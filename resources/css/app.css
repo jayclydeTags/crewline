@@ -6,6 +6,10 @@
 @source '../../vendor/livewire/flux-pro/stubs/**/*.blade.php';
 @source '../../vendor/livewire/flux/stubs/**/*.blade.php';
 
+/* Project colors are stored on the model, so their utilities are generated up front. */
+@source inline('{bg,text,border}-{blue,indigo,violet,pink,red,orange,amber,green,teal,cyan,zinc}-{500,600}');
+@source inline('bg-{blue,indigo,violet,pink,red,orange,amber,green,teal,cyan,zinc}-500/{10,15}');
+
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
