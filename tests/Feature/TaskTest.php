@@ -48,7 +48,7 @@ test('tasks cannot be assigned to people outside the team', function () {
         ->assertHasErrors('taskForm.assignee_id');
 });
 
-test('viewers have read-only access to tasks', function () {
+test('viewers can see and comment on tasks but not change them', function () {
     $viewer = teamUser($this->team, TeamRole::Viewer);
     $task = Task::factory()->for($this->project)->create(['title' => 'Original']);
 
@@ -67,11 +67,11 @@ test('viewers have read-only access to tasks', function () {
 
     $taskPage = fn () => Livewire::actingAs($viewer)->test('pages::tasks.show', ['task' => $task]);
     $taskPage()->set('form.title', 'Changed')->call('save')->assertForbidden();
-    $taskPage()->set('commentBody', 'Hi')->call('postComment')->assertForbidden();
     $taskPage()->set('checklistBody', 'Step')->call('addChecklistItem')->assertForbidden();
+    $taskPage()->set('commentBody', 'Looks good')->call('postComment')->assertHasNoErrors();
 
     expect($task->fresh())->title->toBe('Original')->status->toBe(TaskStatus::Todo)
-        ->and($task->comments()->count())->toBe(0);
+        ->and($task->comments()->count())->toBe(1);
 });
 
 test('dragging a task to another column moves it and logs the activity', function () {

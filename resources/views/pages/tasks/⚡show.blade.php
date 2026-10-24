@@ -47,7 +47,7 @@ new class extends Component {
      */
     public function render(): \Illuminate\Contracts\View\View
     {
-        $this->task->load(['checklistItems', 'attachments', 'labels', 'assignee', 'creator', 'project.team']);
+        $this->task->load(['checklistItems', 'attachments', 'labels', 'assignee', 'creator', 'project.team', 'project.members']);
 
         return $this->view()->title($this->task->title);
     }
@@ -58,7 +58,7 @@ new class extends Component {
     #[Computed]
     public function members()
     {
-        return $this->task->project->team->members()->orderBy('name')->get();
+        return $this->task->project->usersWithAccess();
     }
 
     /**
@@ -107,7 +107,7 @@ new class extends Component {
     {
         $this->authorize('update', $this->task);
 
-        $attributes = $this->form->attributesFor($this->task->project->team);
+        $attributes = $this->form->attributesFor($this->task->project);
         $previousStatus = $this->task->status;
         $previousAssigneeId = $this->task->assignee_id;
 

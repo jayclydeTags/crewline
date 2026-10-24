@@ -28,6 +28,10 @@ class SendDueDateReminders extends Command
             ->with(['assignee', 'project'])
             ->chunkById(200, function ($tasks) use (&$count) {
                 foreach ($tasks as $task) {
+                    if (! $task->assignee->canOnProject($task->project, 'view')) {
+                        continue;
+                    }
+
                     $task->assignee->notify(new TaskDueSoon($task));
                     $count++;
                 }

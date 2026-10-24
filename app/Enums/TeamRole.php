@@ -29,9 +29,9 @@ enum TeamRole: string
     {
         return match ($this) {
             self::Owner => __('Everything, including deleting the team and transferring ownership.'),
-            self::Admin => __('Manage members and invites, create and archive projects.'),
-            self::Member => __('Create and edit tasks, comment, and update their own work.'),
-            self::Viewer => __('Read-only access to projects and tasks.'),
+            self::Admin => __('Manage members and invites, and every project in the team.'),
+            self::Member => __('Create and edit tasks and comment on team-visible projects.'),
+            self::Viewer => __('View team-visible projects and comment on tasks.'),
         };
     }
 

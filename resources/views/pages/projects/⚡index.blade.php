@@ -23,6 +23,7 @@ new #[Title('Projects')] class extends Component {
     {
         return Auth::user()->currentTeam->projects()
             ->when($this->archived, fn ($query) => $query->whereNotNull('archived_at'), fn ($query) => $query->active())
+            ->visibleTo(Auth::user())
             ->withProgress()
             ->orderBy('name')
             ->get();
@@ -91,7 +92,13 @@ new #[Title('Projects')] class extends Component {
                         <div class="flex items-start gap-3">
                             <span class="mt-1.5 size-2.5 shrink-0 rounded-full bg-{{ $project->color }}-500" aria-hidden="true"></span>
                             <div class="min-w-0">
-                                <flux:heading class="truncate">{{ $project->name }}</flux:heading>
+                                <flux:heading class="flex items-center gap-1.5 truncate">
+                                    {{ $project->name }}
+                                    @if ($project->isPrivate())
+                                        <flux:icon.lock-closed variant="micro" class="shrink-0 text-zinc-400" />
+                                        <span class="sr-only">{{ __('(private)') }}</span>
+                                    @endif
+                                </flux:heading>
                                 @if ($project->description)
                                     <flux:text class="mt-1 line-clamp-2 text-sm">{{ $project->description }}</flux:text>
                                 @endif

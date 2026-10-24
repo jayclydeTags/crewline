@@ -187,7 +187,7 @@ new #[Title('Team settings')] class extends Component {
 
         abort_if($member->id === Auth::id() || $member->membership->role === TeamRole::Owner, 403);
 
-        $this->detach($member);
+        $this->team->removeMember($member);
 
         unset($this->members);
 
@@ -224,7 +224,7 @@ new #[Title('Team settings')] class extends Component {
     {
         $this->authorize('leave', $this->team);
 
-        $this->detach(Auth::user());
+        $this->team->removeMember(Auth::user());
 
         $this->redirectRoute('dashboard', navigate: true);
     }
@@ -249,19 +249,6 @@ new #[Title('Team settings')] class extends Component {
         $this->redirectRoute('dashboard', navigate: true);
     }
 
-    /**
-     * Detach a user from the team and clear it as their current team.
-     */
-    private function detach(User $user): void
-    {
-        $this->team->members()->detach($user->id);
-
-        if ($user->current_team_id === $this->team->id) {
-            $user->forceFill(['current_team_id' => null])->save();
-        }
-
-        $this->team->tasks()->where('assignee_id', $user->id)->update(['assignee_id' => null]);
-    }
 }; ?>
 
 <div class="mx-auto w-full max-w-3xl space-y-10">

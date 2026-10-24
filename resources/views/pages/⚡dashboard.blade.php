@@ -79,6 +79,7 @@ new #[Title('Dashboard')] class extends Component {
     {
         return Auth::user()->currentTeam->projects()
             ->active()
+            ->visibleTo(Auth::user())
             ->withProgress()
             ->withCount(['tasks as open_count' => fn (Builder $query) => $query->open()])
             ->orderByDesc('open_count')
@@ -100,7 +101,7 @@ new #[Title('Dashboard')] class extends Component {
      */
     private function openTasks(): Builder
     {
-        return Task::query()->inTeam(Auth::user()->currentTeam)->open()->with(['project', 'assignee']);
+        return Task::query()->inTeam(Auth::user()->currentTeam)->visibleTo(Auth::user())->open()->with(['project', 'assignee']);
     }
 }; ?>
 
