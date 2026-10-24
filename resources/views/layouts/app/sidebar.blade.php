@@ -10,25 +10,51 @@
                 <flux:sidebar.collapse class="lg:hidden" />
             </flux:sidebar.header>
 
+            @if (auth()->user()->currentTeam)
+                <x-team-switcher />
+            @endif
+
             <flux:sidebar.nav>
-                <flux:sidebar.group :heading="__('Platform')" class="grid">
+                <flux:sidebar.group :heading="__('Workspace')" class="grid">
                     <flux:sidebar.item icon="home" :href="route('dashboard')" :current="request()->routeIs('dashboard')" wire:navigate>
                         {{ __('Dashboard') }}
                     </flux:sidebar.item>
+                    <flux:sidebar.item icon="folder" :href="route('projects.index')" :current="request()->routeIs('projects.*', 'tasks.*')" wire:navigate>
+                        {{ __('Projects') }}
+                    </flux:sidebar.item>
+                    <flux:sidebar.item
+                        icon="bell"
+                        :href="route('notifications')"
+                        :current="request()->routeIs('notifications')"
+                        :badge="($unread = auth()->user()->unreadNotifications()->count()) ? $unread : null"
+                        wire:navigate
+                    >
+                        {{ __('Notifications') }}
+                    </flux:sidebar.item>
                 </flux:sidebar.group>
+
+                @if ($sidebarProjects = auth()->user()->currentTeam?->projects()->active()->orderBy('name')->limit(8)->get())
+                    @if ($sidebarProjects->isNotEmpty())
+                        <flux:sidebar.group :heading="__('Projects')" class="grid">
+                            @foreach ($sidebarProjects as $sidebarProject)
+                                <flux:sidebar.item
+                                    :href="route('projects.show', $sidebarProject)"
+                                    :current="request()->route('project')?->is($sidebarProject)"
+                                    wire:navigate
+                                    wire:key="sidebar-project-{{ $sidebarProject->id }}"
+                                >
+                                    <span class="flex items-center gap-2">
+                                        <span class="size-2 shrink-0 rounded-full bg-{{ $sidebarProject->color }}-500" aria-hidden="true"></span>
+                                        <span class="truncate">{{ $sidebarProject->name }}</span>
+                                    </span>
+                                </flux:sidebar.item>
+                            @endforeach
+                        </flux:sidebar.group>
+                    @endif
+                @endif
             </flux:sidebar.nav>
 
             <flux:spacer />
-
-            <flux:sidebar.nav>
-                <flux:sidebar.item icon="folder-git-2" href="https://github.com/laravel/livewire-starter-kit" target="_blank">
-                    {{ __('Repository') }}
-                </flux:sidebar.item>
-
-                <flux:sidebar.item icon="book-open-text" href="https://laravel.com/docs/starter-kits#livewire" target="_blank">
-                    {{ __('Documentation') }}
-                </flux:sidebar.item>
-            </flux:sidebar.nav>
 
             <x-desktop-user-menu class="hidden lg:block" :name="auth()->user()->name" />
         </flux:sidebar>
