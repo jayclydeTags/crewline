@@ -1,14 +1,20 @@
 <?php
 
+use App\Enums\ProjectRole;
+use App\Enums\ProjectVisibility;
 use App\Enums\TaskPriority;
+use App\Enums\TeamRole;
 use App\Enums\TaskStatus;
 use App\Livewire\Forms\ProjectForm;
 use App\Livewire\Forms\TaskForm;
 use App\Models\Project;
 use App\Models\Task;
+use App\Models\User;
 use Flux\Flux;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\Url;
 use Livewire\Component;
@@ -38,6 +44,15 @@ new class extends Component {
     #[Url(as: 'q')]
     public string $search = '';
 
+    public string $newMemberId = '';
+
+    public string $newMemberRole = 'contributor';
+
+    /**
+     * Bumped when a role change is rejected, so the role selects re-render with the saved value.
+     */
+    public int $memberSelectsVersion = 0;
+
     /**
      * Mount the component.
      */
@@ -47,7 +62,7 @@ new class extends Component {
 
         $this->projectForm->setProject($this->project);
 
-        if (! in_array($this->view, ['board', 'list', 'activity'], true)) {
+        if (! in_array($this->view, ['board', 'list', 'activity', 'members'], true)) {
             $this->view = 'board';
         }
     }
@@ -66,7 +81,7 @@ new class extends Component {
     #[Computed]
     public function members()
     {
-        return $this->project->team->members()->orderBy('name')->get();
+        return $this->project->usersWithAccess();
     }
 
     /**
@@ -118,6 +133,31 @@ new class extends Component {
     }
 
     /**
+     * Get the current user's effective role on the project.
+     */
+    #[Computed]
+    public function myRole(): ?ProjectRole
+    {
+        return Auth::user()->effectiveProjectRole($this->project);
+    }
+
+    /**
+     * Get team members who can still be given a project role. Team owners and
+     * admins already manage every project, so they are never listed.
+     *
+     * @return \Illuminate\Support\Collection<int, User>
+     */
+    #[Computed]
+    public function addableMembers()
+    {
+        $explicitIds = $this->project->members->modelKeys();
+
+        return $this->project->team->members()->orderBy('name')->get()
+            ->reject(fn (User $user) => $user->membership->role->isAtLeast(TeamRole::Admin) || in_array($user->id, $explicitIds, true))
+            ->values();
+    }
+
+    /**
      * Determine whether the current user may change tasks in this project.
      */
     #[Computed]
@@ -162,7 +202,7 @@ new class extends Component {
     {
         $this->authorize('create', [Task::class, $this->project]);
 
-        $attributes = $this->taskForm->attributesFor($this->project->team);
+        $attributes = $this->taskForm->attributesFor($this->project);
 
         $task = $this->project->tasks()->create([
             ...$attributes,
@@ -204,8 +244,16 @@ new class extends Component {
     {
         $this->authorize('update', $this->project);
 
+        $previousVisibility = $this->project->visibility;
+
         $this->project->update($this->projectForm->attributes());
         $this->project->recordActivity(__('updated the project details'), Auth::user());
+
+        if ($this->project->visibility !== $previousVisibility) {
+            $this->recordVisibilityChange();
+        }
+
+        $this->refreshMembers();
 
         Flux::modal('edit-project')->close();
         Flux::toast(variant: 'success', text: __('Project updated.'));
@@ -246,6 +294,152 @@ new class extends Component {
     }
 
     /**
+     * Give a team member an explicit role on this project.
+     */
+    public function addMember(): void
+    {
+        $this->authorize('manageMembers', $this->project);
+
+        $validated = $this->validate([
+            'newMemberId' => ['required', 'integer', Rule::in($this->addableMembers->modelKeys())],
+            'newMemberRole' => ['required', Rule::enum(ProjectRole::class)],
+        ], ['newMemberId.in' => __('Choose a team member who isn’t already on this project.')], ['newMemberId' => 'member', 'newMemberRole' => 'role']);
+
+        $member = $this->addableMembers->firstWhere('id', (int) $validated['newMemberId']);
+        $role = ProjectRole::from($validated['newMemberRole']);
+
+        $this->project->members()->attach($member->id, ['role' => $role->value]);
+        $this->project->recordActivity(
+            __('added :name to “:project” as :role', ['name' => $member->name, 'project' => $this->project->name, 'role' => $role->label()]),
+            Auth::user(),
+        );
+
+        $this->reset('newMemberId', 'newMemberRole');
+        $this->refreshMembers();
+
+        Flux::toast(variant: 'success', text: __(':name was added to the project.', ['name' => $member->name]));
+    }
+
+    /**
+     * Change a project member's explicit role.
+     */
+    public function changeMemberRole(int $userId, string $role): void
+    {
+        $this->authorize('manageMembers', $this->project);
+
+        $member = $this->project->members()->whereKey($userId)->firstOrFail();
+        $newRole = ProjectRole::tryFrom($role) ?? abort(422);
+
+        if ($member->projectMembership->role === $newRole) {
+            return;
+        }
+
+        if ($newRole !== ProjectRole::Manager) {
+            $this->ensureManagerRemains($member);
+        }
+
+        $this->project->members()->updateExistingPivot($member->id, ['role' => $newRole->value]);
+        $this->project->recordActivity(
+            __('made :name a :role on “:project”', ['name' => $member->name, 'role' => $newRole->label(), 'project' => $this->project->name]),
+            Auth::user(),
+        );
+
+        $this->refreshMembers();
+
+        Flux::toast(variant: 'success', text: __(':name is now a :role on this project.', ['name' => $member->name, 'role' => $newRole->label()]));
+    }
+
+    /**
+     * Remove a member's explicit project role, so their team role applies again.
+     */
+    public function removeMember(int $userId): void
+    {
+        $this->authorize('manageMembers', $this->project);
+
+        $member = $this->project->members()->whereKey($userId)->firstOrFail();
+
+        $this->ensureManagerRemains($member);
+
+        $this->project->members()->detach($member->id);
+        $this->project->recordActivity(
+            __('removed :name from “:project”', ['name' => $member->name, 'project' => $this->project->name]),
+            Auth::user(),
+        );
+
+        $this->refreshMembers();
+
+        Flux::toast(text: __(':name was removed from the project.', ['name' => $member->name]));
+    }
+
+    /**
+     * Switch the project between team-visible and private.
+     */
+    public function setVisibility(string $visibility): void
+    {
+        $this->authorize('update', $this->project);
+
+        $newVisibility = ProjectVisibility::tryFrom($visibility) ?? abort(422);
+
+        if ($newVisibility === $this->project->visibility) {
+            return;
+        }
+
+        $this->project->update(['visibility' => $newVisibility]);
+        $this->projectForm->visibility = $newVisibility->value;
+        $this->recordVisibilityChange();
+        $this->refreshMembers();
+    }
+
+    /**
+     * Stop a project manager from leaving a private project without any manager,
+     * unless a team owner or admin is making the change.
+     */
+    private function ensureManagerRemains(User $member): void
+    {
+        if (! $this->project->isPrivate()
+            || $member->projectMembership->role !== ProjectRole::Manager
+            || Auth::user()->hasTeamRole($this->project->team, TeamRole::Admin)) {
+            return;
+        }
+
+        $otherManagers = $this->project->members()
+            ->wherePivot('role', ProjectRole::Manager->value)
+            ->whereKeyNot($member->id)
+            ->exists();
+
+        if (! $otherManagers) {
+            $this->memberSelectsVersion++;
+
+            Flux::toast(variant: 'danger', text: __('A private project needs at least one manager.'));
+
+            throw ValidationException::withMessages(['members' => __('A private project needs at least one manager.')]);
+        }
+    }
+
+    /**
+     * Log a change to the project's visibility.
+     */
+    private function recordVisibilityChange(): void
+    {
+        $this->project->recordActivity(
+            $this->project->isPrivate()
+                ? __('made “:project” private', ['project' => $this->project->name])
+                : __('made “:project” visible to the team', ['project' => $this->project->name]),
+            Auth::user(),
+        );
+    }
+
+    /**
+     * Reload project membership so roles and permission checks reflect the latest change.
+     */
+    private function refreshMembers(): void
+    {
+        $this->project->load('members');
+
+        unset($this->members, $this->addableMembers, $this->myRole, $this->canEditTasks, $this->activities);
+    }
+
+    /**
      * Get the base query for tasks with everything the views display.
      *
      * @return \Illuminate\Database\Eloquent\Relations\HasMany<Task, Project>
@@ -277,6 +471,12 @@ new class extends Component {
                     @if ($project->isArchived())
                         <flux:badge size="sm" icon="archive-box">{{ __('Archived') }}</flux:badge>
                     @endif
+                    @if ($project->isPrivate())
+                        <flux:badge size="sm" icon="lock-closed">{{ __('Private') }}</flux:badge>
+                    @endif
+                    @if ($this->myRole)
+                        <flux:badge size="sm" :color="$this->myRole->color()" data-test="my-project-role">{{ __('You: :role', ['role' => $this->myRole->label()]) }}</flux:badge>
+                    @endif
                 </div>
                 @if ($project->description)
                     <flux:text class="max-w-2xl">{{ $project->description }}</flux:text>
@@ -294,24 +494,30 @@ new class extends Component {
                     <flux:button variant="primary" icon="plus" wire:click="newTask" data-test="new-task">{{ __('New task') }}</flux:button>
                 @endif
 
-                @can('update', $project)
+                @canany(['update', 'archive', 'delete'], $project)
                     <flux:dropdown align="end">
                         <flux:button icon="ellipsis-horizontal" aria-label="{{ __('Project actions') }}" />
                         <flux:menu>
-                            <flux:modal.trigger name="edit-project">
-                                <flux:menu.item icon="pencil-square">{{ __('Edit project') }}</flux:menu.item>
-                            </flux:modal.trigger>
-                            <flux:menu.item icon="archive-box" wire:click="toggleArchive">
-                                {{ $project->isArchived() ? __('Restore project') : __('Archive project') }}
-                            </flux:menu.item>
-                            <flux:menu.separator />
-                            <flux:menu.item icon="trash" variant="danger" wire:click="deleteProject"
-                                wire:confirm="{{ __('Delete “:name” and all of its tasks? This cannot be undone.', ['name' => $project->name]) }}">
-                                {{ __('Delete project') }}
-                            </flux:menu.item>
+                            @can('update', $project)
+                                <flux:modal.trigger name="edit-project">
+                                    <flux:menu.item icon="pencil-square">{{ __('Edit project') }}</flux:menu.item>
+                                </flux:modal.trigger>
+                            @endcan
+                            @can('archive', $project)
+                                <flux:menu.item icon="archive-box" wire:click="toggleArchive">
+                                    {{ $project->isArchived() ? __('Restore project') : __('Archive project') }}
+                                </flux:menu.item>
+                            @endcan
+                            @can('delete', $project)
+                                <flux:menu.separator />
+                                <flux:menu.item icon="trash" variant="danger" wire:click="deleteProject"
+                                    wire:confirm="{{ __('Delete “:name” and all of its tasks? This cannot be undone.', ['name' => $project->name]) }}">
+                                    {{ __('Delete project') }}
+                                </flux:menu.item>
+                            @endcan
                         </flux:menu>
                     </flux:dropdown>
-                @endcan
+                @endcanany
             </div>
         </div>
 
@@ -323,7 +529,7 @@ new class extends Component {
 
         <nav aria-label="{{ __('Project views') }}">
             <flux:button.group>
-                @foreach (['board' => ['view-columns', __('Board')], 'list' => ['list-bullet', __('List')], 'activity' => ['clock', __('Activity')]] as $key => [$icon, $label])
+                @foreach (['board' => ['view-columns', __('Board')], 'list' => ['list-bullet', __('List')], 'activity' => ['clock', __('Activity')], 'members' => ['users', __('Members')]] as $key => [$icon, $label])
                     <flux:button size="sm" :icon="$icon" :variant="$view === $key ? 'filled' : 'ghost'" wire:click="$set('view', '{{ $key }}')" :aria-current="$view === $key ? 'page' : null">
                         {{ $label }}
                     </flux:button>
@@ -460,9 +666,134 @@ new class extends Component {
                 </flux:table>
             @endif
         </div>
-    @else
+    @elseif ($view === 'activity')
         <div wire:poll.30s.visible>
             <x-activity-feed :activities="$this->activities" />
+        </div>
+    @else
+        @php($canManageMembers = auth()->user()->can('manageMembers', $project))
+        <div class="max-w-3xl space-y-8">
+            <section class="space-y-3" aria-labelledby="access-heading">
+                <flux:heading size="lg" level="2" id="access-heading">{{ __('Access') }}</flux:heading>
+
+                @can('update', $project)
+                    <div role="radiogroup" aria-labelledby="access-heading" class="grid gap-3 sm:grid-cols-2">
+                        @foreach (\App\Enums\ProjectVisibility::cases() as $visibility)
+                            @php($selected = $project->visibility === $visibility)
+                            <button type="button" role="radio" aria-checked="{{ $selected ? 'true' : 'false' }}" wire:click="setVisibility('{{ $visibility->value }}')"
+                                @class([
+                                    'rounded-lg border p-4 text-start transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+                                    'border-zinc-900 dark:border-white' => $selected,
+                                    'border-zinc-200 hover:border-zinc-400 dark:border-zinc-700 dark:hover:border-zinc-500' => ! $selected,
+                                ])>
+                                <span class="flex items-center gap-2 text-sm font-medium">
+                                    <flux:icon :name="$visibility === \App\Enums\ProjectVisibility::Private ? 'lock-closed' : 'users'" variant="micro" />
+                                    {{ $visibility->label() }}
+                                    @if ($selected)
+                                        <flux:icon.check-circle variant="micro" class="ms-auto" />
+                                    @endif
+                                </span>
+                                <span class="mt-1 block text-sm text-zinc-500">{{ $visibility->description() }}</span>
+                            </button>
+                        @endforeach
+                    </div>
+                @else
+                    <flux:text class="flex items-center gap-2 text-sm">
+                        <flux:icon :name="$project->isPrivate() ? 'lock-closed' : 'users'" variant="micro" />
+                        <span><span class="font-medium">{{ $project->visibility->label() }}</span> · {{ $project->visibility->description() }}</span>
+                    </flux:text>
+                @endcan
+            </section>
+
+            <section class="space-y-3" aria-labelledby="project-members-heading">
+                <div>
+                    <flux:heading size="lg" level="2" id="project-members-heading">{{ __('People with access') }}</flux:heading>
+                    <flux:text class="text-sm">{{ __('A project role overrides someone’s team role on this project. Team owners and admins always manage every project.') }}</flux:text>
+                </div>
+
+                @error('members')
+                    <flux:callout variant="danger" icon="exclamation-triangle" :heading="$message" />
+                @enderror
+
+                <ul class="divide-y divide-zinc-200 rounded-lg border border-zinc-200 dark:divide-zinc-700 dark:border-zinc-700">
+                    @foreach ($this->members as $member)
+                        @php($explicitRole = $project->explicitRoleOf($member))
+                        @php($isTeamAdmin = $member->membership->role->isAtLeast(\App\Enums\TeamRole::Admin))
+                        <li class="flex flex-wrap items-center gap-3 p-3" wire:key="project-member-{{ $member->id }}">
+                            <flux:avatar size="sm" :name="$member->name" :initials="$member->initials()" />
+                            <div class="min-w-0 flex-1">
+                                <div class="truncate text-sm font-medium">
+                                    {{ $member->name }}
+                                    @if ($member->id === auth()->id())
+                                        <span class="text-zinc-500">({{ __('you') }})</span>
+                                    @endif
+                                </div>
+                                <div class="truncate text-xs text-zinc-500">
+                                    @if ($isTeamAdmin)
+                                        {{ __('Team :role · full access', ['role' => $member->membership->role->label()]) }}
+                                    @elseif ($explicitRole)
+                                        {{ __('Project role · team :role', ['role' => $member->membership->role->label()]) }}
+                                    @else
+                                        {{ __('From team role (:role)', ['role' => $member->membership->role->label()]) }}
+                                    @endif
+                                </div>
+                            </div>
+
+                            @if ($canManageMembers && $explicitRole && ! $isTeamAdmin)
+                                <div class="w-36" wire:key="project-role-{{ $member->id }}-{{ $explicitRole->value }}-{{ $memberSelectsVersion }}">
+                                    <flux:select size="sm" aria-label="{{ __('Project role for :name', ['name' => $member->name]) }}" wire:change="changeMemberRole({{ $member->id }}, $event.target.value)">
+                                        @foreach (\App\Enums\ProjectRole::cases() as $role)
+                                            <flux:select.option value="{{ $role->value }}" :selected="$explicitRole === $role">{{ $role->label() }}</flux:select.option>
+                                        @endforeach
+                                    </flux:select>
+                                </div>
+                                <flux:button size="sm" variant="ghost" icon="x-mark" wire:click="removeMember({{ $member->id }})"
+                                    wire:confirm="{{ $project->isPrivate() ? __('Remove :name from this private project? They will lose access.', ['name' => $member->name]) : __('Remove :name’s project role? Their team role will apply again.', ['name' => $member->name]) }}"
+                                    aria-label="{{ __('Remove :name from the project', ['name' => $member->name]) }}" />
+                            @else
+                                <flux:badge size="sm" :color="$member->effective_role->color()">{{ $member->effective_role->label() }}</flux:badge>
+                            @endif
+                        </li>
+                    @endforeach
+                </ul>
+            </section>
+
+            @if ($canManageMembers)
+                <section class="space-y-3" aria-labelledby="add-member-heading">
+                    <flux:heading size="lg" level="2" id="add-member-heading">{{ __('Add someone to this project') }}</flux:heading>
+
+                    @if ($this->addableMembers->isEmpty())
+                        <flux:text class="text-sm">{{ __('Everyone on the team already has a project role or full access. Invite people from team settings first.') }}</flux:text>
+                    @else
+                        <form wire:submit="addMember" class="flex flex-col gap-3 sm:flex-row sm:items-start">
+                            <div class="flex-1">
+                                <flux:select wire:model="newMemberId" :label="__('Team member')" :placeholder="__('Choose a member…')">
+                                    @foreach ($this->addableMembers as $candidate)
+                                        <flux:select.option value="{{ $candidate->id }}">{{ $candidate->name }} ({{ $candidate->membership->role->label() }})</flux:select.option>
+                                    @endforeach
+                                </flux:select>
+                            </div>
+                            <div class="sm:w-40">
+                                <flux:select wire:model="newMemberRole" :label="__('Project role')">
+                                    @foreach (\App\Enums\ProjectRole::cases() as $role)
+                                        <flux:select.option value="{{ $role->value }}">{{ $role->label() }}</flux:select.option>
+                                    @endforeach
+                                </flux:select>
+                            </div>
+                            <flux:button variant="primary" type="submit" class="sm:mt-6" data-test="add-project-member">{{ __('Add') }}</flux:button>
+                        </form>
+                    @endif
+
+                    <dl class="grid gap-2 text-sm sm:grid-cols-3">
+                        @foreach (\App\Enums\ProjectRole::cases() as $role)
+                            <div class="rounded-md bg-zinc-50 p-3 dark:bg-zinc-900">
+                                <dt class="font-medium">{{ $role->label() }}</dt>
+                                <dd class="text-zinc-500">{{ $role->description() }}</dd>
+                            </div>
+                        @endforeach
+                    </dl>
+                </section>
+            @endif
         </div>
     @endif
 

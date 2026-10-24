@@ -11,9 +11,11 @@ Teams plan projects, break them into tasks, assign work and track progress on a 
   | Role   | Can do                                                          |
   | ------ | --------------------------------------------------------------- |
   | Owner  | Everything, including deleting the team and transferring ownership |
-  | Admin  | Manage members and invites, create, archive and delete projects |
-  | Member | Create and edit tasks, comment, attach files                    |
-  | Viewer | Read-only access to projects and tasks                          |
+  | Admin  | Manage members and invites, and fully manage every project      |
+  | Member | Create and edit tasks, comment and attach files on team-visible projects |
+  | Viewer | View team-visible projects and comment on tasks                 |
+
+- **Project-level roles:** give someone a different role on one project than their team role, such as a contractor who is a team Viewer but a Contributor on the one project they were hired for. Projects can also be made **private**, so only people added to them (plus team Owners and Admins) can see them. See [Project-level roles](#project-level-roles) below.
 
 - **Invitations:** invite people by email with a role. They accept or decline from a link.
 - **Projects:** description, color, start and end dates, a progress bar, archive and restore.
@@ -83,7 +85,9 @@ This creates an **Acme Studio** team with three projects, tasks, labels and chec
 | `ana@example.com`   | Admin  |
 | `ben@example.com`   | Member |
 | `chloe@example.com` | Member |
-| `dev@example.com`   | Viewer |
+| `dev@example.com`   | Viewer, but a Contributor on Website Redesign |
+
+Ben is also the Manager of **Payroll Revamp**, a private project that Chloe and Dev can't see.
 
 Log in as different users to see how the permissions change. To start over with fresh demo data:
 
@@ -182,10 +186,10 @@ GitHub Actions runs the tests workflow (`.github/workflows/tests.yml`) on pushes
 ```
 app/
 ├── Console/Commands/      SendDueDateReminders (tasks:send-due-reminders)
-├── Enums/                 TeamRole, TaskStatus, TaskPriority
+├── Enums/                 TeamRole, ProjectRole, ProjectVisibility, TaskStatus, TaskPriority
 ├── Http/Middleware/       EnsureTeamContext keeps users inside their current team
 ├── Livewire/Forms/        ProjectForm and TaskForm, which hold validation rules
-├── Models/                Team, Membership (pivot), Project, Task, Comment, Label,
+├── Models/                Team, Membership and ProjectMembership (pivots), Project, Task, Comment, Label,
 │                          ChecklistItem, Attachment, Activity, TeamInvitation
 ├── Notifications/         TaskAssigned, MentionedInComment, TaskDueSoon, TeamInvitationSent
 └── Policies/              TeamPolicy, ProjectPolicy, TaskPolicy, CommentPolicy
@@ -195,8 +199,36 @@ resources/views/
 routes/web.php             App routes; most sit behind the `team` middleware
 ```
 
+## Project-level roles
+
+A project role overrides someone's team role on that one project. Manage them from a project's **Members** tab, which also has the visibility switch.
+
+| Action                         | Manager | Contributor | Viewer |
+| ------------------------------ | ------- | ----------- | ------ |
+| View project and tasks         | Yes     | Yes         | Yes    |
+| Comment on tasks               | Yes     | Yes         | Yes    |
+| Create and edit tasks          | Yes     | Yes         | No     |
+| Delete tasks                   | Yes     | Own only    | No     |
+| Edit project settings          | Yes     | No          | No     |
+| Add, remove or change members  | Yes     | No          | No     |
+| Archive project                | Yes     | No          | No     |
+| Delete project                 | No (team Owner or Admin only) | No | No |
+
+The effective role is resolved in this order (see `ProjectRole::resolve()`):
+
+1. Team Owners and Admins are always Managers of every project and can't be downgraded.
+2. If the user has a project role, it applies.
+3. Otherwise the team role applies, but only on **team-visible** projects: a team Member acts as a Contributor and a team Viewer as a Viewer. **Private** projects are hidden from anyone without a project role.
+
+Other rules:
+
+- Only existing team members can be added to a project. Removing someone from the team also removes their project roles.
+- A private project must keep at least one Manager. Only a team Owner or Admin can remove or demote the last one.
+- Role and visibility changes are recorded in the project's activity log.
+
 ### How access control works
 
-- Each user has a role on each team, stored in the `team_user` pivot and cast to the `TeamRole` enum.
-- **Policies** decide what a role may do. Every Livewire action calls `authorize()` before it changes anything, so the rules apply to every request, not just to what the UI shows.
+- Each user has a role on each team, stored in the `team_user` pivot and cast to the `TeamRole` enum. Project roles live in the `project_user` pivot and are cast to the `ProjectRole` enum.
+- `ProjectRole::resolve()` is the single place that decides someone's role on a project. `User::effectiveProjectRole()`, the policies, the assignee and @mention lists, and the UI all go through it. The `visibleTo()` query scopes on `Project` and `Task` apply the same rules in SQL to filter lists, and the tests check that both agree.
+- **Policies** decide what a role may do, and every Livewire action calls `authorize()` before it changes anything, so the rules apply to every request, not just to what the UI shows. Projects and tasks someone can't see return a 404, so private projects don't reveal that they exist.
 - **`EnsureTeamContext`** (the `team` route middleware) makes sure the user has a current team they belong to. Opening a project or task from another of the user's teams switches to that team. Resources from teams the user isn't in return a 404.

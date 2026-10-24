@@ -18,6 +18,12 @@
     <flux:error name="{{ $prefix }}.color" />
 </fieldset>
 
+<flux:radio.group wire:model="{{ $prefix }}.visibility" :label="__('Visibility')">
+    @foreach (\App\Enums\ProjectVisibility::cases() as $visibility)
+        <flux:radio :value="$visibility->value" :label="$visibility->label()" :description="$visibility->description()" />
+    @endforeach
+</flux:radio.group>
+
 <div class="grid gap-4 sm:grid-cols-2">
     <flux:input type="date" wire:model="{{ $prefix }}.starts_on" :label="__('Start date')" />
     <flux:input type="date" wire:model="{{ $prefix }}.ends_on" :label="__('End date')" />

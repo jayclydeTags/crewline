@@ -11,6 +11,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasManyThrough;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
@@ -96,6 +97,31 @@ class Team extends Model
     public function addMember(User $user, TeamRole $role): void
     {
         $this->members()->syncWithoutDetaching([$user->id => ['role' => $role->value]]);
+    }
+
+    /**
+     * Remove a user from the team, along with their project roles, assignments
+     * and current-team selection.
+     */
+    public function removeMember(User $user): void
+    {
+        DB::transaction(function () use ($user) {
+            $this->members()->detach($user->id);
+
+            ProjectMembership::query()
+                ->where('user_id', $user->id)
+                ->whereIn('project_id', $this->projects()->select('id'))
+                ->delete();
+
+            Task::query()
+                ->whereIn('project_id', $this->projects()->select('id'))
+                ->where('assignee_id', $user->id)
+                ->update(['assignee_id' => null]);
+
+            if ($user->current_team_id === $this->id) {
+                $user->forceFill(['current_team_id' => null])->save();
+            }
+        });
     }
 
     /**

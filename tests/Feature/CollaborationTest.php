@@ -3,6 +3,7 @@
 use App\Enums\TeamRole;
 use App\Models\Attachment;
 use App\Models\Comment;
+use App\Models\Project;
 use App\Models\Task;
 use App\Models\Team;
 use App\Models\User;
@@ -100,11 +101,12 @@ test('viewers cannot attach files', function () {
 
 test('the reminder command notifies assignees of open tasks due today or tomorrow', function () {
     Notification::fake();
-    $assignee = User::factory()->create();
+    $project = Project::factory()->create();
+    $assignee = teamUser($project->team, TeamRole::Member);
 
-    $dueTomorrow = Task::factory()->create(['assignee_id' => $assignee->id, 'due_on' => today()->addDay()]);
-    Task::factory()->done()->create(['assignee_id' => $assignee->id, 'due_on' => today()]);
-    Task::factory()->create(['assignee_id' => $assignee->id, 'due_on' => today()->addDays(5)]);
+    $dueTomorrow = Task::factory()->for($project)->create(['assignee_id' => $assignee->id, 'due_on' => today()->addDay()]);
+    Task::factory()->for($project)->done()->create(['assignee_id' => $assignee->id, 'due_on' => today()]);
+    Task::factory()->for($project)->create(['assignee_id' => $assignee->id, 'due_on' => today()->addDays(5)]);
 
     $this->artisan('tasks:send-due-reminders')->assertSuccessful();
 

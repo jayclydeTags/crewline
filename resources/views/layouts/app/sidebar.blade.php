@@ -33,7 +33,7 @@
                     </flux:sidebar.item>
                 </flux:sidebar.group>
 
-                @if ($sidebarProjects = auth()->user()->currentTeam?->projects()->active()->orderBy('name')->limit(8)->get())
+                @if ($sidebarProjects = auth()->user()->currentTeam?->projects()->active()->visibleTo(auth()->user())->orderBy('name')->limit(8)->get())
                     @if ($sidebarProjects->isNotEmpty())
                         <flux:sidebar.group :heading="__('Projects')" class="grid">
                             @foreach ($sidebarProjects as $sidebarProject)

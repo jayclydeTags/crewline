@@ -136,6 +136,17 @@ class Task extends Model
     }
 
     /**
+     * Scope the query to tasks in projects the user can see.
+     *
+     * @param  Builder<Task>  $query
+     */
+    #[Scope]
+    protected function visibleTo(Builder $query, User $user): void
+    {
+        $query->whereHas('project', fn (Builder $projects) => $projects->visibleTo($user));
+    }
+
+    /**
      * Determine whether the task is past its due date and still open.
      */
     public function isOverdue(): bool

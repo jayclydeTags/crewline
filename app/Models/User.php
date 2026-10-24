@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\ProjectRole;
 use App\Enums\TeamRole;
 use Database\Factories\UserFactory;
 use Illuminate\Contracts\Auth\MustVerifyEmail;
@@ -35,6 +36,7 @@ use Laravel\Fortify\TwoFactorAuthenticatable;
  * @property array<string, bool>|null $notification_preferences
  * @property Team|null $currentTeam
  * @property Membership|null $membership
+ * @property ProjectMembership|null $projectMembership
  */
 #[Fillable(['name', 'email', 'password'])]
 #[Hidden(['password', 'two_factor_secret', 'two_factor_recovery_codes', 'remember_token'])]
@@ -124,6 +126,26 @@ class User extends Authenticatable implements MustVerifyEmail, PasskeyUser
     public function hasTeamRole(Team $team, TeamRole $role): bool
     {
         return $this->roleOn($team)?->isAtLeast($role) ?? false;
+    }
+
+    /**
+     * Get the role the user effectively has on the project, or null when they cannot see it.
+     */
+    public function effectiveProjectRole(Project $project): ?ProjectRole
+    {
+        return ProjectRole::resolve(
+            $this->roleOn($project->team),
+            $project->explicitRoleOf($this),
+            $project->visibility,
+        );
+    }
+
+    /**
+     * Determine whether the user's effective project role grants the given ability.
+     */
+    public function canOnProject(Project $project, string $ability): bool
+    {
+        return $this->effectiveProjectRole($project)?->can($ability) ?? false;
     }
 
     /**

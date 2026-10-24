@@ -6,15 +6,19 @@ use App\Enums\TeamRole;
 use App\Models\Project;
 use App\Models\Team;
 use App\Models\User;
+use Illuminate\Auth\Access\Response;
 
 class ProjectPolicy
 {
     /**
-     * Determine whether the user can view the project.
+     * Determine whether the user can view the project. Hidden projects respond
+     * as missing so private projects don't reveal that they exist.
      */
-    public function view(User $user, Project $project): bool
+    public function view(User $user, Project $project): Response
     {
-        return $user->belongsToTeam($project->team);
+        return $user->canOnProject($project, 'view')
+            ? Response::allow()
+            : Response::denyAsNotFound();
     }
 
     /**
@@ -26,11 +30,19 @@ class ProjectPolicy
     }
 
     /**
-     * Determine whether the user can edit the project's details.
+     * Determine whether the user can edit the project's details and visibility.
      */
     public function update(User $user, Project $project): bool
     {
-        return $user->hasTeamRole($project->team, TeamRole::Admin);
+        return $user->canOnProject($project, 'update');
+    }
+
+    /**
+     * Determine whether the user can add, remove, or change the role of project members.
+     */
+    public function manageMembers(User $user, Project $project): bool
+    {
+        return $user->canOnProject($project, 'manageMembers');
     }
 
     /**
@@ -38,11 +50,11 @@ class ProjectPolicy
      */
     public function archive(User $user, Project $project): bool
     {
-        return $user->hasTeamRole($project->team, TeamRole::Admin);
+        return $user->canOnProject($project, 'archive');
     }
 
     /**
-     * Determine whether the user can delete the project.
+     * Determine whether the user can delete the project. Only team owners and admins can.
      */
     public function delete(User $user, Project $project): bool
     {

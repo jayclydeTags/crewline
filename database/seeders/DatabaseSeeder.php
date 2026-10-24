@@ -2,6 +2,8 @@
 
 namespace Database\Seeders;
 
+use App\Enums\ProjectRole;
+use App\Enums\ProjectVisibility;
 use App\Enums\TaskStatus;
 use App\Enums\TeamRole;
 use App\Models\Project;
@@ -49,16 +51,33 @@ class DatabaseSeeder extends Seeder
             ['Website Redesign', 'Refresh the marketing site with the new brand.', 'violet'],
             ['Mobile App Launch', 'Ship v1 of the iOS and Android apps.', 'teal'],
             ['Q4 Campaign', 'Plan and run the end-of-year campaign.', 'orange'],
+            ['Payroll Revamp', 'Rework salary bands and payroll tooling.', 'red', ProjectVisibility::Private],
         ];
 
-        foreach ($projects as [$name, $description, $color]) {
+        $ben = $crew->firstWhere('email', 'ben@example.com');
+        $dev = $crew->firstWhere('email', 'dev@example.com');
+
+        foreach ($projects as $details) {
+            [$name, $description, $color] = $details;
+
             $project = Project::factory()->for($team)->create([
                 'name' => $name,
                 'description' => $description,
                 'color' => $color,
+                'visibility' => $details[3] ?? ProjectVisibility::Team,
                 'creator_id' => $owner->id,
             ]);
             $project->recordActivity(__('created the project'), $owner);
+
+            if ($name === 'Website Redesign') {
+                $project->members()->attach($dev->id, ['role' => ProjectRole::Contributor->value]);
+            }
+
+            if ($name === 'Payroll Revamp') {
+                $project->members()->attach($ben->id, ['role' => ProjectRole::Manager->value]);
+            }
+
+            $projectAssignees = $project->isPrivate() ? collect([$owner, $ben]) : $assignees;
 
             foreach (TaskStatus::cases() as $status) {
                 Task::factory()->for($project)->count(fake()->numberBetween(2, 4))->sequence(fn ($sequence) => [
@@ -67,9 +86,9 @@ class DatabaseSeeder extends Seeder
                     'status' => $status,
                     'completed_at' => $status === TaskStatus::Done ? now()->subDays(fake()->numberBetween(0, 20)) : null,
                     'creator_id' => $owner->id,
-                ])->each(function (Task $task) use ($assignees, $labels, $owner) {
+                ])->each(function (Task $task) use ($projectAssignees, $labels, $owner) {
                     $task->update([
-                        'assignee_id' => $assignees->random()->id,
+                        'assignee_id' => $projectAssignees->random()->id,
                         'due_on' => now()->addDays(fake()->numberBetween(-4, 14)),
                     ]);
                     $task->labels()->attach($labels->random(fake()->numberBetween(0, 2))->pluck('id'));

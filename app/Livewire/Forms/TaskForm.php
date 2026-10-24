@@ -4,8 +4,8 @@ namespace App\Livewire\Forms;
 
 use App\Enums\TaskPriority;
 use App\Enums\TaskStatus;
+use App\Models\Project;
 use App\Models\Task;
-use App\Models\Team;
 use Illuminate\Validation\Rule;
 use Livewire\Form;
 
@@ -37,16 +37,16 @@ class TaskForm extends Form
     }
 
     /**
-     * Validate the form for a task in the given team and return model attributes.
+     * Validate the form for a task in the given project and return model attributes.
      *
      * @return array{title: string, description: ?string, assignee_id: ?int, status: TaskStatus, priority: TaskPriority, due_on: ?string}
      */
-    public function attributesFor(Team $team): array
+    public function attributesFor(Project $project): array
     {
         $validated = $this->validate([
             'title' => ['required', 'string', 'max:200'],
             'description' => ['nullable', 'string', 'max:10000'],
-            'assignee_id' => ['nullable', 'integer', Rule::exists('team_user', 'user_id')->where('team_id', $team->id)],
+            'assignee_id' => ['nullable', 'integer', Rule::in($project->usersWithAccess()->modelKeys())],
             'status' => ['required', Rule::enum(TaskStatus::class)],
             'priority' => ['required', Rule::enum(TaskPriority::class)],
             'due_on' => ['nullable', 'date'],

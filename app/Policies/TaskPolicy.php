@@ -2,19 +2,21 @@
 
 namespace App\Policies;
 
-use App\Enums\TeamRole;
 use App\Models\Project;
 use App\Models\Task;
 use App\Models\User;
+use Illuminate\Auth\Access\Response;
 
 class TaskPolicy
 {
     /**
-     * Determine whether the user can view the task.
+     * Determine whether the user can view the task. Tasks in hidden projects respond as missing.
      */
-    public function view(User $user, Task $task): bool
+    public function view(User $user, Task $task): Response
     {
-        return $user->belongsToTeam($task->project->team);
+        return $user->canOnProject($task->project, 'view')
+            ? Response::allow()
+            : Response::denyAsNotFound();
     }
 
     /**
@@ -22,7 +24,7 @@ class TaskPolicy
      */
     public function create(User $user, Project $project): bool
     {
-        return ! $project->isArchived() && $user->hasTeamRole($project->team, TeamRole::Member);
+        return ! $project->isArchived() && $user->canOnProject($project, 'editTasks');
     }
 
     /**
@@ -30,7 +32,7 @@ class TaskPolicy
      */
     public function update(User $user, Task $task): bool
     {
-        return ! $task->project->isArchived() && $user->hasTeamRole($task->project->team, TeamRole::Member);
+        return ! $task->project->isArchived() && $user->canOnProject($task->project, 'editTasks');
     }
 
     /**
@@ -38,17 +40,17 @@ class TaskPolicy
      */
     public function comment(User $user, Task $task): bool
     {
-        return $user->hasTeamRole($task->project->team, TeamRole::Member);
+        return $user->canOnProject($task->project, 'comment');
     }
 
     /**
-     * Determine whether the user can delete the task. Members may only delete tasks they created.
+     * Determine whether the user can delete the task. Contributors may only delete tasks they created.
      */
     public function delete(User $user, Task $task): bool
     {
-        $team = $task->project->team;
+        $role = $user->effectiveProjectRole($task->project);
 
-        return $user->hasTeamRole($team, TeamRole::Admin)
-            || ($task->creator_id === $user->id && $user->hasTeamRole($team, TeamRole::Member));
+        return (bool) $role?->can('deleteTasks')
+            || ($task->creator_id === $user->id && (bool) $role?->can('deleteOwnTasks'));
     }
 }
